@@ -1,0 +1,6 @@
+browser-use
+browser-use[cli]
+pyarmor
+mcp
+playwright
+langchain-openai
