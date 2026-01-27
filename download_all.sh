@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ================= 配置区 =================
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOWNLOADS_DIR="$ROOT_DIR/downloads"
+DOWNLOADS_DIR="$ROOT_DIR/all-downloads"
 NPM_DOWNLOAD_DIR="$DOWNLOADS_DIR/npm-packages"
 PYPI_DOWNLOAD_DIR="$DOWNLOADS_DIR/python-packages"
 
@@ -48,8 +48,6 @@ main() {
     
     # ================= 下载 NPM 包 =================
     print_header "Step 1: 下载 NPM 依赖包"
-    
-    cd "$ROOT_DIR/npm"
     
     # 检查是否存在package-lock.json
     if [ ! -f "package-lock.json" ]; then
@@ -267,8 +265,6 @@ EOF
     # ================= 下载 Python 包 =================
     print_header "Step 2: 下载 Python 依赖包"
     
-    cd "$ROOT_DIR/pypi"
-    
     if [ ! -f "requirements.txt" ]; then
         print_error "未找到 requirements.txt 文件"
         exit 1
@@ -301,7 +297,6 @@ EOF
     done
     
     # ================= 完成汇总 =================
-    cd "$ROOT_DIR"
     
     print_header "下载完成汇总"
     
