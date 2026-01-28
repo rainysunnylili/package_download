@@ -57,202 +57,216 @@ main() {
     
     # 创建临时的下载脚本配置
     cat > download_npm_temp.mjs << 'EOF'
-import fs from 'fs-extra';
+import fs from 'fs';
 import path from 'path';
-import pacote from 'pacote';
-import pLimit from 'p-limit';
-import { fileURLToPath } from 'url';
+import os from 'os';
+import { spawnSync } from 'child_process';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const ROOT_DIR = process.cwd();
+const PACKAGE_JSON_PATH = path.join(ROOT_DIR, 'package.json');
+const PACKAGE_LOCK_PATH = path.join(ROOT_DIR, 'package-lock.json');
+const NPMRC_PATH = path.join(ROOT_DIR, '.npmrc');
+const DOWNLOAD_DIR = process.env.NPM_DOWNLOAD_DIR || path.join(ROOT_DIR, 'npm-offline-packages');
 
-const LOCK_FILE_PATH = path.resolve(__dirname, 'package-lock.json');
-const DOWNLOAD_DIR = process.env.NPM_DOWNLOAD_DIR || path.resolve(__dirname, 'npm-offline-packages');
-const CONCURRENCY = 15;
-const INCLUDE_DEV = true;
-const TARGET_PLATFORMS = ['linux', 'win32', 'darwin'];
-const TARGET_ARCHS = ['x64', 'arm64'];
-
-const processedPackages = new Set();
-const failedPackages = [];
-const limit = pLimit(CONCURRENCY);
-
-async function main() {
-    console.log('🚀 开始全量依赖分析与下载...');
-    
-    if (!fs.existsSync(LOCK_FILE_PATH)) {
-        console.error(`❌ 找不到文件: ${LOCK_FILE_PATH}`);
-        return;
+function ensureFileExists(filePath) {
+    if (!fs.existsSync(filePath)) {
+        console.error(`❌ 找不到文件: ${filePath}`);
+        process.exit(1);
     }
-    
-    const lockData = fs.readJsonSync(LOCK_FILE_PATH);
-    fs.ensureDirSync(DOWNLOAD_DIR);
-
-    const queue = [];
-
-    if (lockData.packages) {
-        console.log('📦 检测到 Lockfile V2/V3 格式，开始解析...');
-        for (const [pkgPath, meta] of Object.entries(lockData.packages)) {
-            if (pkgPath === "") continue;
-            if (!INCLUDE_DEV && meta.dev) continue;
-
-            // 修复: 很多entry没有name字段，需要从path中解析
-            let pkgName = meta.name;
-            if (!pkgName && pkgPath.startsWith("node_modules/")) {
-                const parts = pkgPath.split("node_modules/");
-                pkgName = parts[parts.length - 1];
-            }
-            
-            if (!pkgName) {
-                // console.warn(`⚠️ 无法解析包名: ${pkgPath}`);
-                continue;
-            }
-
-            if (meta.resolved && meta.version) {
-                queue.push({ 
-                    name: pkgName, 
-                    version: meta.version,
-                    resolved: meta.resolved,
-                    integrity: meta.integrity
-                });
-            }
-        }
-    } else if (lockData.dependencies) {
-        console.log('⚠️ 检测到旧版 Lockfile V1 格式。');
-        // V1 格式通常需要递归，但这里简单处理顶层
-        // 为了完整性，建议升级 lockfile
-        // 这里做一个递归辅助函数
-        function traverse(deps) {
-            for (const [name, meta] of Object.entries(deps)) {
-                 if (!INCLUDE_DEV && meta.dev) continue;
-                 
-                 queue.push({
-                     name: name,
-                     version: meta.version,
-                     resolved: meta.resolved,
-                     integrity: meta.integrity
-                 });
-                 
-                 if (meta.dependencies) {
-                     traverse(meta.dependencies);
-                 }
-            }
-        }
-        traverse(lockData.dependencies);
-    }
-
-    // 去重
-    const uniqueQueue = [];
-    const seen = new Set();
-    for (const item of queue) {
-        const key = `${item.name}@${item.version}`;
-        if (!seen.has(key)) {
-            seen.add(key);
-            uniqueQueue.push(item);
-        }
-    }
-
-    console.log(`📊 共解析出 ${uniqueQueue.length} 个依赖项 (已去重)，开始下载...`);
-
-    const downloadTasks = uniqueQueue.map(pkg => limit(() => processPackage(pkg)));
-    await Promise.all(downloadTasks);
-
-    console.log('\n=============================================');
-    if (failedPackages.length > 0) {
-        console.log(`⚠️  完成，但有 ${failedPackages.length} 个包下载失败:`);
-        failedPackages.forEach(f => console.log(` - ${f}`));
-        fs.writeJsonSync(path.join(DOWNLOAD_DIR, 'failed_log.json'), failedPackages);
-    } else {
-        console.log(`✅ 所有依赖下载完成！文件数: ${fs.readdirSync(DOWNLOAD_DIR).length}`);
-    }
-    console.log('=============================================');
 }
 
-async function processPackage(pkg) {
-    const pkgId = `${pkg.name}@${pkg.version}`;
-    if (processedPackages.has(pkgId)) return;
-    processedPackages.add(pkgId);
+function runCommand(command, args, options = {}) {
+    const result = spawnSync(command, args, { ...options, encoding: 'utf8' });
+    if (result.error) {
+        throw result.error;
+    }
+    if (result.status !== 0) {
+        const stdout = (result.stdout || '').trim();
+        const stderr = (result.stderr || '').trim();
+        const details = [stdout, stderr].filter(Boolean).join('\n');
+        throw new Error(`命令失败: ${command} ${args.join(' ')}${details ? `\n${details}` : ''}`);
+    }
+    return result.stdout || '';
+}
+
+function listDependencies(tempDir) {
+    const result = spawnSync('npm', ['list', '--all', '--json'], { cwd: tempDir, encoding: 'utf8' });
+    if (result.error) {
+        throw result.error;
+    }
+    if (!result.stdout || !result.stdout.trim()) {
+        throw new Error('npm list 未返回有效 JSON');
+    }
+    if (result.status !== 0) {
+        console.warn('⚠️ npm list 返回非零状态，继续解析输出');
+    }
+    return JSON.parse(result.stdout);
+}
+
+function collectDependencies(tree) {
+    const collected = new Map();
+    const visit = (node) => {
+        if (!node || !node.dependencies) return;
+        for (const [name, dep] of Object.entries(node.dependencies)) {
+            if (!dep || !dep.version) {
+                continue;
+            }
+            const key = `${name}@${dep.version}`;
+            if (!collected.has(key)) {
+                collected.set(key, { name, version: dep.version });
+            }
+            visit(dep);
+        }
+    };
+    visit(tree);
+    return Array.from(collected.values());
+}
+
+function loadLockData() {
+    if (!fs.existsSync(PACKAGE_LOCK_PATH)) {
+        return null;
+    }
+    return JSON.parse(fs.readFileSync(PACKAGE_LOCK_PATH, 'utf8'));
+}
+
+function collectPeerDependenciesFromLock(lockData) {
+    const peers = new Map();
+    if (!lockData || !lockData.packages) return peers;
+    for (const meta of Object.values(lockData.packages)) {
+        if (!meta || !meta.peerDependencies) continue;
+        for (const [name, range] of Object.entries(meta.peerDependencies)) {
+            if (!peers.has(name)) {
+                peers.set(name, new Set());
+            }
+            peers.get(name).add(range || '*');
+        }
+    }
+    return peers;
+}
+
+function resolvePeerVersion(name, range, tempDir) {
+    const spec = range && range !== '*' ? `${name}@${range}` : name;
+    const output = runCommand('npm', ['view', spec, 'version', '--json'], { cwd: tempDir });
+    let version = '';
+    try {
+        const parsed = JSON.parse(output);
+        if (Array.isArray(parsed)) {
+            version = String(parsed[parsed.length - 1] || '').trim();
+        } else if (parsed !== null && parsed !== undefined) {
+            version = String(parsed).trim();
+        }
+    } catch {
+        version = '';
+    }
+    if (!version) {
+        version = output.trim().split(/\s+/).pop() || '';
+        version = version.replace(/^['"]+|['"]+$/g, '');
+    }
+    if (!version) {
+        throw new Error(`无法解析版本: ${spec}`);
+    }
+    return version;
+}
+
+function tarballName(pkgName, version) {
+    const safeName = pkgName.startsWith('@')
+        ? pkgName.slice(1).replace(/\//g, '-')
+        : pkgName.replace(/\//g, '-');
+    return `${safeName}-${version}.tgz`;
+}
+
+function main() {
+    console.log('🚀 开始使用 npm 解析依赖并批量下载...');
+    ensureFileExists(PACKAGE_JSON_PATH);
+    fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-pack-'));
+    const cleanup = () => fs.rmSync(tempDir, { recursive: true, force: true });
 
     try {
-        await downloadTarball(pkg);
+        fs.copyFileSync(PACKAGE_JSON_PATH, path.join(tempDir, 'package.json'));
+        if (fs.existsSync(PACKAGE_LOCK_PATH)) {
+            fs.copyFileSync(PACKAGE_LOCK_PATH, path.join(tempDir, 'package-lock.json'));
+        }
+        if (fs.existsSync(NPMRC_PATH)) {
+            fs.copyFileSync(NPMRC_PATH, path.join(tempDir, '.npmrc'));
+        }
 
-        // 检查可选依赖 (跨平台补全)
-        // 只有当包名看起来像是可能有原生绑定时才去检查，或者对所有包检查
-        // 为了确保 "win和linux都能用"，我们对所有包尝试获取 manifest 查看 optionalDependencies
-        const manifest = await pacote.manifest(pkgId, { 
-            fullMetadata: true,
-            preferOnline: true 
-        }).catch(() => null);
+        runCommand('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], {
+            cwd: tempDir,
+            stdio: 'inherit'
+        });
 
-        if (manifest && manifest.optionalDependencies) {
-            const optionalDeps = Object.keys(manifest.optionalDependencies);
-            if (optionalDeps.length > 0) {
-                for (const depName of optionalDeps) {
-                    const depVersion = manifest.optionalDependencies[depName];
-                    if (shouldDownloadPlatformSpecific(depName)) {
-                        const childPkgId = `${depName}@${depVersion}`;
-                        if (!processedPackages.has(childPkgId)) {
-                            // console.log(`🔍 补全跨平台包: ${childPkgId}`);
-                            await limit(() => processPackage({ name: depName, version: depVersion }));
-                        }
+        const tree = listDependencies(tempDir);
+        const packages = collectDependencies(tree);
+        const known = new Set(packages.map((pkg) => `${pkg.name}@${pkg.version}`));
+        const lockData = loadLockData();
+        const peerDeps = collectPeerDependenciesFromLock(lockData);
+        const peerFailed = [];
+
+        for (const [name, ranges] of peerDeps) {
+            for (const range of ranges) {
+                try {
+                    const version = resolvePeerVersion(name, range, tempDir);
+                    const key = `${name}@${version}`;
+                    if (!known.has(key)) {
+                        known.add(key);
+                        packages.push({ name, version });
                     }
+                } catch (err) {
+                    console.error(`❌ 解析 peer 失败 ${name}@${range}: ${err.message}`);
+                    peerFailed.push(`${name}@${range}`);
                 }
             }
         }
 
+        console.log(`📊 共解析出 ${packages.length} 个依赖项 (已去重)，开始下载...`);
+
+        const failed = [];
+        for (const pkg of packages) {
+            const spec = `${pkg.name}@${pkg.version}`;
+            const fileName = tarballName(pkg.name, pkg.version);
+            const destPath = path.join(DOWNLOAD_DIR, fileName);
+
+            if (fs.existsSync(destPath)) {
+                continue;
+            }
+
+            const result = spawnSync('npm', ['pack', spec, '--pack-destination', DOWNLOAD_DIR], {
+                cwd: tempDir,
+                encoding: 'utf8'
+            });
+
+            if (result.error || result.status !== 0) {
+                const message = (result.stderr || result.stdout || '').trim();
+                console.error(`❌ ${spec} 下载失败${message ? `: ${message}` : ''}`);
+                failed.push(spec);
+                continue;
+            }
+            process.stdout.write('.');
+        }
+        if (packages.length > 0) {
+            process.stdout.write('\n');
+        }
+
+        if (failed.length || peerFailed.length) {
+            const allFailed = failed.concat(peerFailed);
+            fs.writeFileSync(path.join(DOWNLOAD_DIR, 'failed_log.json'), JSON.stringify(allFailed, null, 2));
+            console.error(`⚠️ 下载完成，但有 ${allFailed.length} 个包失败`);
+            process.exitCode = 1;
+        } else {
+            console.log('✅ 所有依赖下载完成！');
+        }
     } catch (err) {
-        // console.error(`❌ 下载失败 [${pkgId}]: ${err.message}`);
-        failedPackages.push(pkgId);
+        console.error('Fatal Error:', err);
+        process.exitCode = 1;
+    } finally {
+        cleanup();
     }
 }
 
-async function downloadTarball(pkg) {
-    const safeName = pkg.name.replace(/\//g, '-');
-    const fileName = `${safeName}-${pkg.version}.tgz`;
-    const destPath = path.join(DOWNLOAD_DIR, fileName);
-
-    if (fs.existsSync(destPath)) {
-        return;
-    }
-
-    const spec = pkg.resolved || `${pkg.name}@${pkg.version}`;
-    // console.log(`⬇️  下载: ${pkg.name}@${pkg.version}`);
-    process.stdout.write('.'); // 进度条效果
-    
-    await pacote.tarball.file(spec, destPath, {
-        integrity: pkg.integrity,
-        timeout: 60000,
-        retry: { retries: 3 }
-    });
-}
-
-function shouldDownloadPlatformSpecific(pkgName) {
-    // 只要是 optional dependency，并且包含我们目标平台关键词的，都下载
-    // 或者它可能没有任何平台关键词（通用包），也下载以防万一
-    const isPlatformSpecific = TARGET_PLATFORMS.some(p => pkgName.includes(p));
-    // 如果它包含其他平台的关键词（如 android, freebsd），则跳过
-    // 这里我们只关心 win32, linux, darwin
-    // 如果包名包含 'android' 但不包含 'linux' (虽然android是linux内核，但通常npm包区分)，可以过滤
-    // 简单起见，只要包含目标平台，或者完全不包含任何平台特征（可能是通用补充包），就下载
-    
-    const knownPlatforms = ['linux', 'win32', 'darwin', 'android', 'freebsd', 'sunos', 'netbsd', 'openbsd'];
-    const hasPlatformKeyword = knownPlatforms.some(p => pkgName.includes(p));
-    
-    if (!hasPlatformKeyword) return true; // 没有平台关键词，可能是通用包，下载
-    
-    return TARGET_PLATFORMS.some(p => pkgName.includes(p));
-}
-
-main().catch(err => {
-    console.error('Fatal Error:', err);
-});
+main();
 EOF
-    
-    # 安装必要的依赖（如果还没有）
-    if [ ! -d "node_modules" ]; then
-        print_info "安装npm下载工具的依赖..."
-        npm install
-    fi
     
     # 执行npm包下载
     NPM_DOWNLOAD_DIR="$NPM_DOWNLOAD_DIR" node download_npm_temp.mjs

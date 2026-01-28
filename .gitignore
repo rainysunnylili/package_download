@@ -211,3 +211,6 @@ node_modules/
 npm/npm-offline-packages/
 pypi/wheels/
 all-downloads/
+
+package.json
+package-lock.json
