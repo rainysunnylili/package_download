@@ -426,15 +426,15 @@ function main() {
 
         if (process.env.NPM_EXPAND_REGISTRY !== '0') {
             try {
-                console.log('🔎 开始通过 registry 扩展依赖（可能较慢）...');
+                console.log('🔎 开始扩展依赖，请耐心等待...');
                 expandFailed = expandDependencies(packages, known, tempDir, (done, queued, initialTotal, knownTotal, finished) => {
                     const totalEstimated = Math.max(initialTotal, done + queued);
                     const percent = totalEstimated > 0 ? Math.min(100, Math.round((done / totalEstimated) * 100)) : 0;
                     if (finished) {
-                        console.log(`✅ registry 扩展完成: 已处理 ${done}，当前总依赖 ${knownTotal}`);
+                        console.log(`✅ 依赖扩展完成: 已处理 ${done}，当前总依赖 ${knownTotal}`);
                         return;
                     }
-                    console.log(`⏳ registry 扩展进度: ${done}/${totalEstimated} (${percent}%)，队列剩余 ${queued}，当前总依赖 ${knownTotal}`);
+                    console.log(`⏳ 依赖扩展进度: ${done}/${totalEstimated} (${percent}%)，队列剩余 ${queued}，当前总依赖 ${knownTotal}`);
                 });
             } catch (err) {
                 console.error(`❌ 扩展依赖失败: ${err.message}`);
@@ -457,7 +457,7 @@ function main() {
             if (added === 0) {
                 break;
             }
-            console.log(`📦 tarball 解析新增 ${added} 个依赖，继续下载...`);
+            console.log(`📦 解析新增 ${added} 个依赖，继续下载...`);
             failed = failed.concat(packAllPackages(packages, tempDir, DOWNLOAD_DIR));
         }
 
