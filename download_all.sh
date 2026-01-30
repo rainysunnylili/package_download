@@ -61,14 +61,12 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { spawnSync } from 'child_process';
-import { createRequire } from 'module';
 
 const ROOT_DIR = process.cwd();
 const PACKAGE_JSON_PATH = path.join(ROOT_DIR, 'package.json');
 const PACKAGE_LOCK_PATH = path.join(ROOT_DIR, 'package-lock.json');
 const NPMRC_PATH = path.join(ROOT_DIR, '.npmrc');
 const DOWNLOAD_DIR = process.env.NPM_DOWNLOAD_DIR || path.join(ROOT_DIR, 'npm-offline-packages');
-let cliProgress = null;
 
 function ensureFileExists(filePath) {
     if (!fs.existsSync(filePath)) {
@@ -89,13 +87,6 @@ function runCommand(command, args, options = {}) {
         throw new Error(`命令失败: ${command} ${args.join(' ')}${details ? `\n${details}` : ''}`);
     }
     return result.stdout || '';
-}
-
-function loadCliProgress(tempDir) {
-    if (cliProgress) return cliProgress;
-    const require = createRequire(path.join(tempDir, 'package.json'));
-    cliProgress = require('cli-progress');
-    return cliProgress;
 }
 
 function listDependencies(tempDir) {
@@ -237,8 +228,10 @@ function expandDependencies(packages, known, tempDir, onProgress) {
         if (processed.has(key)) continue;
         processed.add(key);
 
-        if (typeof onProgress === 'function') {
-            onProgress(processed.size, queue.length, initialTotal, known.size, false, pkg);
+        if (processed.size === 1 || processed.size % 50 === 0) {
+            if (typeof onProgress === 'function') {
+                onProgress(processed.size, queue.length, initialTotal, known.size);
+            }
         }
 
         const deps = fetchDependencyMap(pkg.name, pkg.version, tempDir, 'dependencies', depCache);
@@ -289,32 +282,12 @@ function readPackageJsonFromTarball(tarballPath) {
 }
 
 function expandDependenciesFromTarballs(packages, known, tempDir, downloadDir) {
-    if (!cliProgress) {
-        throw new Error('cli-progress 未初始化');
-    }
     const versionCache = new Map();
     const processed = new Set();
     const failed = [];
     const beforeSize = known.size;
-    const total = packages.length;
-    const bar = new cliProgress.SingleBar(
-        {
-            format: '🔎 下载进度 |{bar}| {percentage}% {value}/{total} {pkg}',
-            hideCursor: true,
-            clearOnComplete: true
-        },
-        cliProgress.Presets.shades_classic
-    );
-    if (total > 0) {
-        bar.start(total, 0, { pkg: '' });
-    }
 
-    for (let i = 0; i < packages.length; i += 1) {
-        const pkg = packages[i];
-        const index = i + 1;
-        if (total > 0) {
-            bar.update(index, { pkg: `${pkg.name}@${pkg.version}` });
-        }
+    for (const pkg of packages) {
         const key = `${pkg.name}@${pkg.version}`;
         if (processed.has(key)) continue;
         processed.add(key);
@@ -344,37 +317,20 @@ function expandDependenciesFromTarballs(packages, known, tempDir, downloadDir) {
         }
     }
 
-    if (total > 0) {
-        bar.stop();
-    }
     return { added: known.size - beforeSize, failed };
 }
 
 function packAllPackages(packages, tempDir, downloadDir) {
-    if (!cliProgress) {
-        throw new Error('cli-progress 未初始化');
-    }
     const timeoutMs = Number(process.env.NPM_PACK_TIMEOUT_MS || '0') || 0;
     const failed = [];
     const total = packages.length;
-    const bar = new cliProgress.SingleBar(
-        {
-            format: '📦 下载进度 |{bar}| {percentage}% {value}/{total} {pkg}',
-            hideCursor: true,
-            clearOnComplete: true
-        },
-        cliProgress.Presets.shades_classic
-    );
-    if (total > 0) {
-        bar.start(total, 0, { pkg: '' });
-    }
     for (let i = 0; i < packages.length; i += 1) {
         const pkg = packages[i];
         const index = i + 1;
-        const spec = `${pkg.name}@${pkg.version}`;
-        if (total > 0) {
-            bar.update(index, { pkg: spec });
+        if (index === 1 || index % 50 === 0 || index === total) {
+            console.log(`📦 正在下载 ${index}/${total}`);
         }
+        const spec = `${pkg.name}@${pkg.version}`;
         const fileName = tarballName(pkg.name, pkg.version);
         const destPath = path.join(downloadDir, fileName);
 
@@ -394,10 +350,11 @@ function packAllPackages(packages, tempDir, downloadDir) {
             failed.push(spec);
             continue;
         }
+        process.stdout.write('.');
     }
 
     if (packages.length > 0) {
-        bar.stop();
+        process.stdout.write('\n');
     }
 
     return failed;
@@ -424,13 +381,6 @@ function main() {
             cwd: tempDir,
             stdio: 'inherit'
         });
-
-        runCommand('npm', ['install', 'cli-progress', '--no-save', '--no-audit', '--no-fund'], {
-            cwd: tempDir,
-            stdio: 'inherit'
-        });
-
-        cliProgress = loadCliProgress(tempDir);
 
         const tree = listDependencies(tempDir);
         const packages = collectDependencies(tree);
@@ -476,40 +426,16 @@ function main() {
 
         if (process.env.NPM_EXPAND_REGISTRY !== '0') {
             try {
-                console.log('🔎 开始扩展解析依赖，请耐心等待...');
-                const registryBar = new cliProgress.SingleBar(
-                    {
-                        format: '⏳ 依赖解析进度 |{bar}| {percentage}% {value}/{total} 队列 {queued} 当前 {known} {pkg}',
-                        hideCursor: true,
-                        clearOnComplete: true
-                    },
-                    cliProgress.Presets.shades_classic
-                );
-                registryBar.start(1, 0, { queued: 0, known: packages.length, pkg: '' });
-
-                expandFailed = expandDependencies(
-                    packages,
-                    known,
-                    tempDir,
-                    (done, queued, initialTotal, knownTotal, finished, current) => {
-                        const totalEstimated = Math.max(initialTotal, done + queued);
-                        if (typeof registryBar.setTotal === 'function') {
-                            registryBar.setTotal(totalEstimated);
-                        } else {
-                            registryBar.total = totalEstimated;
-                        }
-                        const currentLabel = current ? `${current.name}@${current.version}` : '';
-                        registryBar.update(done, {
-                            queued,
-                            known: knownTotal,
-                            pkg: currentLabel
-                        });
-                        if (finished) {
-                            registryBar.stop();
-                            console.log(`✅ registry 扩展完成: 已处理 ${done}，当前总依赖 ${knownTotal}`);
-                        }
+                console.log('🔎 开始通过 registry 扩展依赖（可能较慢）...');
+                expandFailed = expandDependencies(packages, known, tempDir, (done, queued, initialTotal, knownTotal, finished) => {
+                    const totalEstimated = Math.max(initialTotal, done + queued);
+                    const percent = totalEstimated > 0 ? Math.min(100, Math.round((done / totalEstimated) * 100)) : 0;
+                    if (finished) {
+                        console.log(`✅ registry 扩展完成: 已处理 ${done}，当前总依赖 ${knownTotal}`);
+                        return;
                     }
-                );
+                    console.log(`⏳ registry 扩展进度: ${done}/${totalEstimated} (${percent}%)，队列剩余 ${queued}，当前总依赖 ${knownTotal}`);
+                });
             } catch (err) {
                 console.error(`❌ 扩展依赖失败: ${err.message}`);
             }
@@ -520,21 +446,19 @@ function main() {
         let failed = packAllPackages(packages, tempDir, DOWNLOAD_DIR);
         let tarballFailed = [];
 
-        if (process.env.NPM_SKIP_TARBALL_EXPAND !== '1') {
-            for (let i = 0; i < 2; i += 1) {
-                const { added, failed: tarFailed } = expandDependenciesFromTarballs(
-                    packages,
-                    known,
-                    tempDir,
-                    DOWNLOAD_DIR
-                );
-                tarballFailed = tarballFailed.concat(tarFailed);
-                if (added === 0) {
-                    break;
-                }
-                console.log(`📦 解析新增 ${added} 个依赖，继续下载...`);
-                failed = failed.concat(packAllPackages(packages, tempDir, DOWNLOAD_DIR));
+        for (let i = 0; i < 2; i += 1) {
+            const { added, failed: tarFailed } = expandDependenciesFromTarballs(
+                packages,
+                known,
+                tempDir,
+                DOWNLOAD_DIR
+            );
+            tarballFailed = tarballFailed.concat(tarFailed);
+            if (added === 0) {
+                break;
             }
+            console.log(`📦 tarball 解析新增 ${added} 个依赖，继续下载...`);
+            failed = failed.concat(packAllPackages(packages, tempDir, DOWNLOAD_DIR));
         }
 
         if (failed.length || peerFailed.length || optionalFailed.length || expandFailed.length || tarballFailed.length) {
@@ -565,25 +489,6 @@ EOF
     print_success "NPM包下载完成！"
     
     # ================= 下载 Python 包 =================
-    if [ "${NPM_SKIP_PYTHON:-0}" = "1" ]; then
-        print_info "跳过 Python 包下载 (NPM_SKIP_PYTHON=1)"
-        print_header "下载完成汇总"
-
-        NPM_COUNT=$(find "$NPM_DOWNLOAD_DIR" -type f -name "*.tgz" 2>/dev/null | wc -l)
-        PYPI_COUNT=$(find "$PYPI_DOWNLOAD_DIR" -type f \( -name "*.whl" -o -name "*.tar.gz" \) 2>/dev/null | wc -l)
-
-        echo ""
-        print_success "NPM包数量: $NPM_COUNT 个"
-        print_success "Python包数量: $PYPI_COUNT 个"
-        echo ""
-        print_info "NPM包位置: $NPM_DOWNLOAD_DIR"
-        print_info "Python包位置: $PYPI_DOWNLOAD_DIR"
-        echo ""
-
-        print_header "全部完成 🎉"
-        return 0
-    fi
-
     print_header "Step 2: 下载 Python 依赖包"
     
     if [ ! -f "requirements.txt" ]; then
