@@ -47,6 +47,7 @@ main() {
     echo ""
     
     # ================= 下载 NPM 包 =================
+    T1_START=$SECONDS
     print_header "Step 1: 下载 NPM 依赖包"
     
     # 检查是否存在package-lock.json
@@ -60,13 +61,58 @@ main() {
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 
 const ROOT_DIR = process.cwd();
 const PACKAGE_JSON_PATH = path.join(ROOT_DIR, 'package.json');
 const PACKAGE_LOCK_PATH = path.join(ROOT_DIR, 'package-lock.json');
 const NPMRC_PATH = path.join(ROOT_DIR, '.npmrc');
 const DOWNLOAD_DIR = process.env.NPM_DOWNLOAD_DIR || path.join(ROOT_DIR, 'npm-offline-packages');
+const CONCURRENCY = Number(process.env.NPM_CONCURRENCY || '128');
+
+function updateProgress(current, total, context) {
+    const width = 30;
+    const percentage = Math.round((current / total) * 100);
+    const filled = Math.round((width * current) / total);
+    const empty = width - filled;
+    const bar = '█'.repeat(filled) + '░'.repeat(empty);
+    process.stdout.write(`\r${context}: [${bar}] ${current}/${total} (${percentage}%)`);
+}
+
+function runCommandAsync(command, args, options = {}) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(command, args, { ...options });
+        let stdout = '';
+        let stderr = '';
+        if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
+        if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
+        child.on('error', reject);
+        child.on('close', (code) => {
+            if (code !== 0) {
+                reject(new Error(`${command} ${args.join(' ')} failed\n${stderr || stdout}`));
+            } else {
+                resolve(stdout);
+            }
+        });
+    });
+}
+
+function createLimiter(limit) {
+    let active = 0;
+    const queue = [];
+    const next = () => {
+        if (active >= limit || queue.length === 0) return;
+        active++;
+        const { fn, resolve, reject } = queue.shift();
+        fn().then(resolve).catch(reject).finally(() => { active--; next(); });
+    };
+    return (fn) => new Promise((resolve, reject) => {
+        queue.push({ fn, resolve, reject });
+        next();
+    });
+}
+
+const limiter = createLimiter(CONCURRENCY);
 
 function ensureFileExists(filePath) {
     if (!fs.existsSync(filePath)) {
@@ -119,6 +165,37 @@ function collectDependencies(tree) {
         }
     };
     visit(tree);
+    return Array.from(collected.values());
+}
+
+function collectPackagesFromLock(lockData) {
+    const collected = new Map();
+    if (!lockData) return [];
+    
+    // V2/V3 (packages)
+    if (lockData.packages) {
+        for (const [key, val] of Object.entries(lockData.packages)) {
+            if (!key) continue;
+            const name = key.split('node_modules/').pop();
+            if (name && val.version) {
+                const uniqueKey = `${name}@${val.version}`;
+                collected.set(uniqueKey, { name, version: val.version });
+            }
+        }
+    } 
+    // V1 (dependencies)
+    else if (lockData.dependencies) {
+        const traverse = (deps) => {
+            for (const [name, val] of Object.entries(deps)) {
+                if (val.version) {
+                    const uniqueKey = `${name}@${val.version}`;
+                    collected.set(uniqueKey, { name, version: val.version });
+                }
+                if (val.dependencies) traverse(val.dependencies);
+            }
+        };
+        traverse(lockData.dependencies);
+    }
     return Array.from(collected.values());
 }
 
@@ -214,7 +291,36 @@ function fetchDependencyMap(name, version, tempDir, field, cache) {
     return deps;
 }
 
-function expandDependencies(packages, known, tempDir, onProgress) {
+async function resolveVersionAsync(name, range, tempDir, cache) {
+    const spec = range && range !== '*' ? `${name}@${range}` : name;
+    if (cache.has(spec)) return cache.get(spec);
+    const output = await limiter(() => runCommandAsync('npm', ['view', spec, 'version', '--json'], { cwd: tempDir }));
+    let version = '';
+    try {
+        const parsed = JSON.parse(output);
+        version = Array.isArray(parsed) ? String(parsed[parsed.length - 1] || '').trim() : String(parsed).trim();
+    } catch { version = output.trim().split(/\s+/).pop()?.replace(/^['"]|['"]$/g, '') || ''; }
+    if (!version) throw new Error(`无法解析版本: ${spec}`);
+    cache.set(spec, version);
+    return version;
+}
+
+async function fetchDependencyMapAsync(name, version, tempDir, field, cache) {
+    const key = `${name}@${version}:${field}`;
+    if (cache.has(key)) return cache.get(key);
+    let deps = {};
+    try {
+        const output = await limiter(() => runCommandAsync('npm', ['view', `${name}@${version}`, field, '--json'], { cwd: tempDir }));
+        if (output?.trim()) {
+            const parsed = JSON.parse(output);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) deps = parsed;
+        }
+    } catch { deps = {}; }
+    cache.set(key, deps);
+    return deps;
+}
+
+async function expandDependencies(packages, known, tempDir, onProgress) {
     const queue = [...packages];
     const processed = new Set();
     const versionCache = new Map();
@@ -223,35 +329,38 @@ function expandDependencies(packages, known, tempDir, onProgress) {
     const initialTotal = packages.length;
 
     while (queue.length) {
-        const pkg = queue.shift();
-        const key = `${pkg.name}@${pkg.version}`;
-        if (processed.has(key)) continue;
-        processed.add(key);
+        const batch = queue.splice(0, CONCURRENCY).filter((pkg) => {
+            const key = `${pkg.name}@${pkg.version}`;
+            if (processed.has(key)) return false;
+            processed.add(key);
+            return true;
+        });
+        if (batch.length === 0) continue;
 
-        if (processed.size === 1 || processed.size % 50 === 0) {
-            if (typeof onProgress === 'function') {
-                onProgress(processed.size, queue.length, initialTotal, known.size);
-            }
+        if (typeof onProgress === 'function') {
+            const totalEstimated = Math.max(initialTotal, processed.size + queue.length);
+            onProgress(processed.size, queue.length, totalEstimated, known.size);
         }
 
-        const deps = fetchDependencyMap(pkg.name, pkg.version, tempDir, 'dependencies', depCache);
-        const optional = fetchDependencyMap(pkg.name, pkg.version, tempDir, 'optionalDependencies', depCache);
-        const merged = { ...deps, ...optional };
-
-        for (const [name, range] of Object.entries(merged)) {
-            try {
-                const version = resolveVersionCached(name, range, tempDir, versionCache);
-                const depKey = `${name}@${version}`;
-                if (!known.has(depKey)) {
-                    known.add(depKey);
-                    const item = { name, version };
-                    packages.push(item);
-                    queue.push(item);
-                }
-            } catch (err) {
-                failed.push(`${name}@${range || '*'}`);
-            }
-        }
+        await Promise.all(batch.map(async (pkg) => {
+            const [deps, optional] = await Promise.all([
+                fetchDependencyMapAsync(pkg.name, pkg.version, tempDir, 'dependencies', depCache),
+                fetchDependencyMapAsync(pkg.name, pkg.version, tempDir, 'optionalDependencies', depCache)
+            ]);
+            const merged = { ...deps, ...optional };
+            await Promise.all(Object.entries(merged).map(async ([name, range]) => {
+                try {
+                    const version = await resolveVersionAsync(name, range, tempDir, versionCache);
+                    const depKey = `${name}@${version}`;
+                    if (!known.has(depKey)) {
+                        known.add(depKey);
+                        const item = { name, version };
+                        packages.push(item);
+                        queue.push(item);
+                    }
+                } catch { failed.push(`${name}@${range || '*'}`); }
+            }));
+        }));
     }
 
     if (typeof onProgress === 'function') {
@@ -320,48 +429,44 @@ function expandDependenciesFromTarballs(packages, known, tempDir, downloadDir) {
     return { added: known.size - beforeSize, failed };
 }
 
-function packAllPackages(packages, tempDir, downloadDir) {
-    const timeoutMs = Number(process.env.NPM_PACK_TIMEOUT_MS || '0') || 0;
+async function packAllPackages(packages, tempDir, downloadDir) {
     const failed = [];
     const total = packages.length;
-    for (let i = 0; i < packages.length; i += 1) {
-        const pkg = packages[i];
-        const index = i + 1;
-        if (index === 1 || index % 50 === 0 || index === total) {
-            console.log(`📦 正在下载 ${index}/${total}`);
-        }
+    let completed = 0;
+
+    // Initial render
+    updateProgress(0, total, '下载进度');
+
+    const tasks = packages.map((pkg) => limiter(async () => {
         const spec = `${pkg.name}@${pkg.version}`;
         const fileName = tarballName(pkg.name, pkg.version);
         const destPath = path.join(downloadDir, fileName);
 
         if (fs.existsSync(destPath)) {
-            continue;
+            completed++;
+            updateProgress(completed, total, '下载进度');
+            return;
         }
 
-        const result = spawnSync('npm', ['pack', spec, '--pack-destination', downloadDir], {
-            cwd: tempDir,
-            encoding: 'utf8',
-            timeout: timeoutMs > 0 ? timeoutMs : undefined
-        });
-
-        if (result.error || result.status !== 0) {
-            const message = (result.stderr || result.stdout || '').trim();
-            console.error(`❌ ${spec} 下载失败${message ? `: ${message}` : ''}`);
+        try {
+            await runCommandAsync('npm', ['pack', spec, '--pack-destination', downloadDir], { cwd: tempDir });
+        } catch (err) {
+            // Clear line to print error cleanly
+            process.stdout.write('\r\x1b[K'); 
+            console.error(`❌ ${spec} 下载失败`);
             failed.push(spec);
-            continue;
         }
-        process.stdout.write('.');
-    }
+        completed++;
+        updateProgress(completed, total, '下载进度');
+    }));
 
-    if (packages.length > 0) {
-        process.stdout.write('\n');
-    }
-
+    await Promise.all(tasks);
+    process.stdout.write('\n'); // New line after progress bar
     return failed;
 }
 
-function main() {
-    console.log('🚀 开始使用 npm 解析依赖并批量下载...');
+async function main() {
+    console.log(`🚀 开始使用 npm 解析依赖并批量下载 (并发: ${CONCURRENCY})...`);
     ensureFileExists(PACKAGE_JSON_PATH);
     fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
@@ -383,9 +488,16 @@ function main() {
         });
 
         const tree = listDependencies(tempDir);
-        const packages = collectDependencies(tree);
-        const known = new Set(packages.map((pkg) => `${pkg.name}@${pkg.version}`));
+        let packages = collectDependencies(tree);
         const lockData = loadLockData();
+
+        const lockPackages = collectPackagesFromLock(lockData);
+        if (lockPackages.length > 0) {
+            console.log(`📦 从 lockfile 解析出 ${lockPackages.length} 个依赖，合并中...`);
+            packages = packages.concat(lockPackages);
+        }
+
+        const known = new Set(packages.map((pkg) => `${pkg.name}@${pkg.version}`));
         const peerDeps = collectPeerDependenciesFromLock(lockData);
         const optionalDeps = collectOptionalDependenciesFromLock(lockData);
         const peerFailed = [];
@@ -424,26 +536,37 @@ function main() {
             }
         }
 
-        if (process.env.NPM_EXPAND_REGISTRY !== '0') {
+        const shouldExpand = process.env.NPM_EXPAND_REGISTRY === '1' || (process.env.NPM_EXPAND_REGISTRY !== '0' && (!lockPackages || lockPackages.length === 0));
+
+        if (!shouldExpand && process.env.NPM_EXPAND_REGISTRY !== '0') {
+            console.log('⚡ 检测到完整 lockfile，跳过 registry 递归扩展 (加速模式). 如需强制扩展请设置 NPM_EXPAND_REGISTRY=1');
+        }
+
+        if (shouldExpand) {
             try {
-                console.log('🔎 开始扩展依赖，请耐心等待...');
-                expandFailed = expandDependencies(packages, known, tempDir, (done, queued, initialTotal, knownTotal, finished) => {
+                console.log('🔎 开始扩展依赖 (128并发)...');
+                expandFailed = await expandDependencies(packages, known, tempDir, (done, queued, initialTotal, knownTotal, finished) => {
                     const totalEstimated = Math.max(initialTotal, done + queued);
-                    const percent = totalEstimated > 0 ? Math.min(100, Math.round((done / totalEstimated) * 100)) : 0;
+                    const percentage = totalEstimated > 0 ? Math.min(100, Math.round((done / totalEstimated) * 100)) : 0;
                     if (finished) {
-                        console.log(`✅ 依赖扩展完成: 已处理 ${done}，当前总依赖 ${knownTotal}`);
-                        return;
+                         process.stdout.write(`\r✅ 依赖扩展完成: 已处理 ${done}，当前总依赖 ${knownTotal}\n`);
+                         return;
                     }
-                    console.log(`⏳ 依赖扩展进度: ${done}/${totalEstimated} (${percent}%)，队列剩余 ${queued}，当前总依赖 ${knownTotal}`);
+                    
+                    const width = 30;
+                    const filled = Math.round((width * done) / totalEstimated);
+                    const empty = width - filled;
+                    const bar = '█'.repeat(filled) + '░'.repeat(empty);
+                    process.stdout.write(`\r🔎 依赖扩展: [${bar}] ${done}/${totalEstimated} (${percentage}%)`);
                 });
             } catch (err) {
                 console.error(`❌ 扩展依赖失败: ${err.message}`);
             }
         }
 
-        console.log(`📊 共解析出 ${packages.length} 个依赖项 (已去重)，开始下载...`);
+        console.log(`📊 共解析出 ${packages.length} 个依赖项 (已去重)，开始下载 (128并发)...`);
 
-        let failed = packAllPackages(packages, tempDir, DOWNLOAD_DIR);
+        let failed = await packAllPackages(packages, tempDir, DOWNLOAD_DIR);
         let tarballFailed = [];
 
         for (let i = 0; i < 2; i += 1) {
@@ -458,7 +581,7 @@ function main() {
                 break;
             }
             console.log(`📦 解析新增 ${added} 个依赖，继续下载...`);
-            failed = failed.concat(packAllPackages(packages, tempDir, DOWNLOAD_DIR));
+            failed = failed.concat(await packAllPackages(packages, tempDir, DOWNLOAD_DIR));
         }
 
         if (failed.length || peerFailed.length || optionalFailed.length || expandFailed.length || tarballFailed.length) {
@@ -477,7 +600,7 @@ function main() {
     }
 }
 
-main();
+main().then(() => process.exit(process.exitCode || 0)).catch((err) => { console.error('Fatal:', err); process.exit(1); });
 EOF
     
     # 执行npm包下载
@@ -487,8 +610,10 @@ EOF
     rm -f download_npm_temp.mjs
     
     print_success "NPM包下载完成！"
+    echo -e "${YELLOW}⏱️  Step 1 耗时: $((SECONDS - T1_START)) 秒${NC}"
     
     # ================= 下载 Python 包 =================
+    T2_START=$SECONDS
     print_header "Step 2: 下载 Python 依赖包"
     
     if [ ! -f "requirements.txt" ]; then
@@ -522,6 +647,8 @@ EOF
         fi
     done
     
+    echo -e "${YELLOW}⏱️  Step 2 耗时: $((SECONDS - T2_START)) 秒${NC}"
+
     # ================= 完成汇总 =================
     
     print_header "下载完成汇总"
