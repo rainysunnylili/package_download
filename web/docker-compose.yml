@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ../..
+      dockerfile: web/backend/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - task-data:/tmp/pkg-download-tasks
+    environment:
+      - MAX_CONCURRENT_TASKS=5
+      - TASK_EXPIRE_HOURS=24
+      - HOST=0.0.0.0
+      - PORT=8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: always
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: web/frontend/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always
+
+volumes:
+  task-data:
