@@ -7,6 +7,9 @@ DOWNLOADS_DIR="$ROOT_DIR/all-downloads"
 NPM_DOWNLOAD_DIR="$DOWNLOADS_DIR/npm-packages"
 PYPI_DOWNLOAD_DIR="$DOWNLOADS_DIR/python-packages"
 
+# 下载模式: all, npm, pypi
+MODE="all"
+
 # 颜色输出
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -34,21 +37,58 @@ print_info() {
     echo -e "${YELLOW}📦 $1${NC}"
 }
 
-# ================= 主逻辑 =================
-main() {
-    print_header "开始下载所有依赖包"
-    
-    # 创建下载目录
-    mkdir -p "$NPM_DOWNLOAD_DIR"
-    mkdir -p "$PYPI_DOWNLOAD_DIR"
-    
-    print_info "NPM包保存目录: $NPM_DOWNLOAD_DIR"
-    print_info "Python包保存目录: $PYPI_DOWNLOAD_DIR"
+print_usage() {
+    echo "用法: $0 [选项]"
     echo ""
+    echo "选项:"
+    echo "  all     下载全部依赖包 (默认)"
+    echo "  npm     仅下载 NPM 依赖包"
+    echo "  pypi    仅下载 Python (PyPI) 依赖包"
+    echo "  -h, --help  显示帮助信息"
+    echo ""
+    echo "示例:"
+    echo "  $0           # 下载全部"
+    echo "  $0 all       # 下载全部"
+    echo "  $0 npm       # 仅下载 NPM 包"
+    echo "  $0 pypi      # 仅下载 Python 包"
+}
+
+# ================= 参数解析 =================
+parse_args() {
+    if [ $# -eq 0 ]; then
+        MODE="all"
+        return
+    fi
+
+    case "$1" in
+        all)
+            MODE="all"
+            ;;
+        npm)
+            MODE="npm"
+            ;;
+        pypi|python)
+            MODE="pypi"
+            ;;
+        -h|--help)
+            print_usage
+            exit 0
+            ;;
+        *)
+            print_error "未知参数: $1"
+            print_usage
+            exit 1
+            ;;
+    esac
+}
+
+# ================= NPM 下载函数 =================
+download_npm() {
+    local T_START=$SECONDS
+    print_header "下载 NPM 依赖包"
     
-    # ================= 下载 NPM 包 =================
-    T1_START=$SECONDS
-    print_header "Step 1: 下载 NPM 依赖包"
+    mkdir -p "$NPM_DOWNLOAD_DIR"
+    print_info "NPM包保存目录: $NPM_DOWNLOAD_DIR"
     
     # 检查是否存在package-lock.json
     if [ ! -f "package-lock.json" ]; then
@@ -172,7 +212,6 @@ function collectPackagesFromLock(lockData) {
     const collected = new Map();
     if (!lockData) return [];
     
-    // V2/V3 (packages)
     if (lockData.packages) {
         for (const [key, val] of Object.entries(lockData.packages)) {
             if (!key) continue;
@@ -183,7 +222,6 @@ function collectPackagesFromLock(lockData) {
             }
         }
     } 
-    // V1 (dependencies)
     else if (lockData.dependencies) {
         const traverse = (deps) => {
             for (const [name, val] of Object.entries(deps)) {
@@ -390,12 +428,17 @@ function readPackageJsonFromTarball(tarballPath) {
     }
 }
 
-function expandDependenciesFromTarballs(packages, known, tempDir, downloadDir) {
+async function expandDependenciesFromTarballs(packages, known, tempDir, downloadDir) {
     const versionCache = new Map();
     const processed = new Set();
     const failed = [];
     const beforeSize = known.size;
+    const totalPkgs = packages.length;
+    let processedCount = 0;
+    const newDepsToResolve = [];
 
+    // 第一阶段：从所有 tarball 提取依赖（快速，只读本地文件）
+    process.stdout.write(`🔍 扫描已下载包中的依赖...`);
     for (const pkg of packages) {
         const key = `${pkg.name}@${pkg.version}`;
         if (processed.has(key)) continue;
@@ -413,18 +456,42 @@ function expandDependenciesFromTarballs(packages, known, tempDir, downloadDir) {
         };
 
         for (const [name, range] of Object.entries(deps)) {
-            try {
-                const version = resolveVersionCached(name, range, tempDir, versionCache);
-                const depKey = `${name}@${version}`;
-                if (!known.has(depKey)) {
-                    known.add(depKey);
-                    packages.push({ name, version });
-                }
-            } catch {
-                failed.push(`${name}@${range || '*'}`);
+            // 先检查是否已经在 known 中有合适的版本
+            const exactKey = `${name}@${range}`;
+            if (!versionCache.has(exactKey)) {
+                newDepsToResolve.push({ name, range });
             }
         }
+        processedCount++;
     }
+    process.stdout.write(`\r🔍 扫描完成，发现 ${newDepsToResolve.length} 个待解析依赖\n`);
+
+    if (newDepsToResolve.length === 0) {
+        return { added: 0, failed: [] };
+    }
+
+    // 第二阶段：并发解析版本号
+    const total = newDepsToResolve.length;
+    let resolved = 0;
+    process.stdout.write(`📦 解析依赖版本: 0/${total}`);
+
+    await Promise.all(newDepsToResolve.map(({ name, range }) => limiter(async () => {
+        try {
+            const version = await resolveVersionAsync(name, range, tempDir, versionCache);
+            const depKey = `${name}@${version}`;
+            if (!known.has(depKey)) {
+                known.add(depKey);
+                packages.push({ name, version });
+            }
+        } catch {
+            failed.push(`${name}@${range || '*'}`);
+        }
+        resolved++;
+        if (resolved % 10 === 0 || resolved === total) {
+            process.stdout.write(`\r📦 解析依赖版本: ${resolved}/${total}`);
+        }
+    })));
+    process.stdout.write(`\n`);
 
     return { added: known.size - beforeSize, failed };
 }
@@ -434,7 +501,6 @@ async function packAllPackages(packages, tempDir, downloadDir) {
     const total = packages.length;
     let completed = 0;
 
-    // Initial render
     updateProgress(0, total, '下载进度');
 
     const tasks = packages.map((pkg) => limiter(async () => {
@@ -451,7 +517,6 @@ async function packAllPackages(packages, tempDir, downloadDir) {
         try {
             await runCommandAsync('npm', ['pack', spec, '--pack-destination', downloadDir], { cwd: tempDir });
         } catch (err) {
-            // Clear line to print error cleanly
             process.stdout.write('\r\x1b[K'); 
             console.error(`❌ ${spec} 下载失败`);
             failed.push(spec);
@@ -461,7 +526,7 @@ async function packAllPackages(packages, tempDir, downloadDir) {
     }));
 
     await Promise.all(tasks);
-    process.stdout.write('\n'); // New line after progress bar
+    process.stdout.write('\n');
     return failed;
 }
 
@@ -570,7 +635,7 @@ async function main() {
         let tarballFailed = [];
 
         for (let i = 0; i < 2; i += 1) {
-            const { added, failed: tarFailed } = expandDependenciesFromTarballs(
+            const { added, failed: tarFailed } = await expandDependenciesFromTarballs(
                 packages,
                 known,
                 tempDir,
@@ -610,15 +675,20 @@ EOF
     rm -f download_npm_temp.mjs
     
     print_success "NPM包下载完成！"
-    echo -e "${YELLOW}⏱️  Step 1 耗时: $((SECONDS - T1_START)) 秒${NC}"
+    echo -e "${YELLOW}⏱️  NPM下载耗时: $((SECONDS - T_START)) 秒${NC}"
+}
+
+# ================= PyPI 下载函数 =================
+download_pypi() {
+    local T_START=$SECONDS
+    print_header "下载 Python 依赖包"
     
-    # ================= 下载 Python 包 =================
-    T2_START=$SECONDS
-    print_header "Step 2: 下载 Python 依赖包"
+    mkdir -p "$PYPI_DOWNLOAD_DIR"
+    print_info "Python包保存目录: $PYPI_DOWNLOAD_DIR"
     
     if [ ! -f "requirements.txt" ]; then
         print_error "未找到 requirements.txt 文件"
-        exit 1
+        return 1
     fi
     
     print_info "使用镜像源: https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -647,25 +717,58 @@ EOF
         fi
     done
     
-    echo -e "${YELLOW}⏱️  Step 2 耗时: $((SECONDS - T2_START)) 秒${NC}"
+    print_success "Python包下载完成！"
+    echo -e "${YELLOW}⏱️  PyPI下载耗时: $((SECONDS - T_START)) 秒${NC}"
+}
 
-    # ================= 完成汇总 =================
-    
+# ================= 汇总函数 =================
+print_summary() {
     print_header "下载完成汇总"
     
-    NPM_COUNT=$(find "$NPM_DOWNLOAD_DIR" -type f -name "*.tgz" 2>/dev/null | wc -l)
-    PYPI_COUNT=$(find "$PYPI_DOWNLOAD_DIR" -type f \( -name "*.whl" -o -name "*.tar.gz" \) 2>/dev/null | wc -l)
+    if [ "$MODE" = "all" ] || [ "$MODE" = "npm" ]; then
+        NPM_COUNT=$(find "$NPM_DOWNLOAD_DIR" -type f -name "*.tgz" 2>/dev/null | wc -l)
+        print_success "NPM包数量: $NPM_COUNT 个"
+        print_info "NPM包位置: $NPM_DOWNLOAD_DIR"
+    fi
+    
+    if [ "$MODE" = "all" ] || [ "$MODE" = "pypi" ]; then
+        PYPI_COUNT=$(find "$PYPI_DOWNLOAD_DIR" -type f \( -name "*.whl" -o -name "*.tar.gz" \) 2>/dev/null | wc -l)
+        print_success "Python包数量: $PYPI_COUNT 个"
+        print_info "Python包位置: $PYPI_DOWNLOAD_DIR"
+    fi
     
     echo ""
-    print_success "NPM包数量: $NPM_COUNT 个"
-    print_success "Python包数量: $PYPI_COUNT 个"
-    echo ""
-    print_info "NPM包位置: $NPM_DOWNLOAD_DIR"
-    print_info "Python包位置: $PYPI_DOWNLOAD_DIR"
-    echo ""
-    
     print_header "全部完成 🎉"
 }
 
+# ================= 主逻辑 =================
+main() {
+    parse_args "$@"
+    
+    case "$MODE" in
+        all)
+            print_header "开始下载所有依赖包"
+            ;;
+        npm)
+            print_header "开始下载 NPM 依赖包"
+            ;;
+        pypi)
+            print_header "开始下载 Python 依赖包"
+            ;;
+    esac
+    
+    # 根据模式执行下载
+    if [ "$MODE" = "all" ] || [ "$MODE" = "npm" ]; then
+        download_npm
+    fi
+    
+    if [ "$MODE" = "all" ] || [ "$MODE" = "pypi" ]; then
+        download_pypi
+    fi
+    
+    # 打印汇总
+    print_summary
+}
+
 # 执行主函数
-main
+main "$@"
