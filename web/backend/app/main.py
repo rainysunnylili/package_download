@@ -1,6 +1,7 @@
 """FastAPI main application"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import logging
 import asyncio
 
@@ -15,11 +16,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+async def cleanup_task_loop():
+    """Periodic task cleanup"""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Run every hour
+            logger.info("Running scheduled task cleanup")
+            task_manager.cleanup_expired_tasks()
+        except Exception as e:
+            logger.error(f"Error in cleanup task: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events"""
+    # Startup
+    logger.info("Starting Package Download Web Platform")
+    config.ensure_dirs()
+    task_manager.cleanup_expired_tasks()
+
+    # Start cleanup task
+    cleanup_task = asyncio.create_task(cleanup_task_loop())
+
+    yield
+
+    # Shutdown
+    logger.info("Shutting down Package Download Web Platform")
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+
+
 # Create FastAPI app
 app = FastAPI(
     title="Package Download Web Platform",
     description="Download NPM and PyPI packages via web interface",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Configure CORS
@@ -35,38 +71,6 @@ app.add_middleware(
 app.include_router(upload.router)
 app.include_router(tasks.router)
 app.include_router(download.router)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Run on application startup"""
-    logger.info("Starting Package Download Web Platform")
-
-    # Ensure directories exist
-    config.ensure_dirs()
-
-    # Clean up expired tasks
-    task_manager.cleanup_expired_tasks()
-
-    # Start cleanup task
-    asyncio.create_task(cleanup_task_loop())
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Run on application shutdown"""
-    logger.info("Shutting down Package Download Web Platform")
-
-
-async def cleanup_task_loop():
-    """Periodic task cleanup"""
-    while True:
-        try:
-            await asyncio.sleep(3600)  # Run every hour
-            logger.info("Running scheduled task cleanup")
-            task_manager.cleanup_expired_tasks()
-        except Exception as e:
-            logger.error(f"Error in cleanup task: {e}")
 
 
 @app.get("/health")

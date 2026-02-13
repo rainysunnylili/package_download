@@ -62,7 +62,8 @@ class FileParser:
                 logger.error(f"Invalid JSON in {file_path}")
                 return False
 
-        return True
+        # Unknown NPM file type
+        return False
 
     @staticmethod
     def validate_python_file(file_path: Path) -> bool:
@@ -103,7 +104,8 @@ class FileParser:
                 logger.error(f"Error reading {file_path}: {e}")
                 return False
 
-        return True
+        # Unknown Python file type
+        return False
 
     @staticmethod
     def categorize_files(files: list[str]) -> dict:
