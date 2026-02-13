@@ -1,0 +1,16 @@
+# Frontend Development Dockerfile
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY web/frontend/package.json /app/
+COPY web/frontend/package-lock.json* /app/
+
+# Install dependencies
+RUN npm install
+
+EXPOSE 5173
+
+# Run development server
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
