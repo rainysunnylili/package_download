@@ -48,8 +48,8 @@ class FileParser:
             try:
                 with open(file_path, "r") as f:
                     data = json.load(f)
-                    # Check if it has dependencies or devDependencies
-                    return "dependencies" in data or "devDependencies" in data
+                    # Valid package.json: must be JSON object with at least a "name" field
+                    return isinstance(data, dict) and "name" in data
             except json.JSONDecodeError:
                 logger.error(f"Invalid JSON in {file_path}")
                 return False
