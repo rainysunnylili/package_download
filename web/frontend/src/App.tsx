@@ -48,7 +48,7 @@ const App: React.FC = () => {
     try {
       await api.parseTask(newTaskId);
     } catch (error) {
-      message.error("Failed to start parsing");
+      message.error("解析启动失败");
     }
   };
 
@@ -60,7 +60,7 @@ const App: React.FC = () => {
       const deps = await api.getDependencies(taskId);
       setDependencies(deps);
     } catch (error) {
-      message.error("Failed to load dependencies");
+      message.error("加载依赖信息失败");
     } finally {
       setLoadingDeps(false);
     }
@@ -79,7 +79,7 @@ const App: React.FC = () => {
       await startDownload();
       setCurrentStep(2);
     } catch (error) {
-      message.error("Failed to start download");
+      message.error("下载启动失败");
     }
   };
 
@@ -97,16 +97,16 @@ const App: React.FC = () => {
 
   const steps = [
     {
-      title: "Upload Files",
-      description: "Upload dependency configuration files",
+      title: "上传文件",
+      description: "上传依赖配置文件",
     },
     {
-      title: "Analyze Dependencies",
-      description: "View dependency tree",
+      title: "分析依赖",
+      description: "查看依赖树",
     },
     {
-      title: "Download & Package",
-      description: "Download all packages",
+      title: "下载打包",
+      description: "下载所有依赖包",
     },
   ];
 
@@ -114,7 +114,7 @@ const App: React.FC = () => {
     <Layout style={{ minHeight: "100vh" }}>
       <Header style={{ background: "#001529", padding: "0 50px" }}>
         <Title level={3} style={{ color: "white", margin: "16px 0" }}>
-          📦 Package Download Platform
+          📦 离线包下载平台
         </Title>
       </Header>
 
@@ -130,6 +130,8 @@ const App: React.FC = () => {
                 npmTree={dependencies?.npm?.tree}
                 pypiPackages={dependencies?.pypi?.packages}
                 loading={loadingDeps || task?.status === "parsing"}
+                logs={logs}
+                taskStatus={task?.status}
               />
 
               {task?.status === "parsed" && (
@@ -139,7 +141,7 @@ const App: React.FC = () => {
                   onClick={handleStartDownload}
                   block
                 >
-                  Start Download
+                  开始下载
                 </Button>
               )}
             </Space>
@@ -155,7 +157,7 @@ const App: React.FC = () => {
 
               {(task.status === "completed" || task.status === "failed") && (
                 <Button onClick={handleReset} block>
-                  Start New Task
+                  新建任务
                 </Button>
               )}
             </Space>
@@ -164,7 +166,7 @@ const App: React.FC = () => {
       </Content>
 
       <Footer style={{ textAlign: "center" }}>
-        Package Download Platform ©2024
+        离线包下载平台 ©2026
       </Footer>
     </Layout>
   );

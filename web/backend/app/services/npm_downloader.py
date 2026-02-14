@@ -57,7 +57,7 @@ class NPMDownloader:
         try:
             await ws_manager.broadcast(task_id, "status", {
                 "phase": "parsing",
-                "message": "Parsing NPM dependencies..."
+                "message": "正在解析 NPM 依赖..."
             })
 
             # Check for package.json
@@ -75,7 +75,7 @@ class NPMDownloader:
                 logger.info(f"Generating package-lock.json for task {task_id}")
                 await ws_manager.broadcast(task_id, "log", {
                     "phase": "parsing",
-                    "message": "Generating package-lock.json..."
+                    "message": "正在生成 package-lock.json..."
                 })
 
                 process = await asyncio.create_subprocess_exec(
@@ -96,7 +96,7 @@ class NPMDownloader:
             logger.info(f"Fetching dependency tree for task {task_id}")
             await ws_manager.broadcast(task_id, "log", {
                 "phase": "parsing",
-                "message": "Analyzing dependency tree..."
+                "message": "正在分析依赖树..."
             })
 
             process = await asyncio.create_subprocess_exec(
@@ -118,7 +118,7 @@ class NPMDownloader:
             logger.error(f"Error parsing NPM dependencies: {e}")
             await ws_manager.broadcast(task_id, "error", {
                 "phase": "parsing",
-                "message": f"Error parsing NPM dependencies: {str(e)}"
+                "message": f"解析 NPM 依赖失败: {str(e)}"
             })
             raise
 
@@ -164,7 +164,7 @@ class NPMDownloader:
         try:
             await ws_manager.broadcast(task_id, "status", {
                 "phase": "downloading",
-                "message": "Downloading NPM packages..."
+                "message": "正在下载 NPM 包..."
             })
 
             package_json = upload_dir / "package.json"
@@ -182,7 +182,7 @@ class NPMDownloader:
             logger.info(f"Installing NPM packages for task {task_id}")
             await ws_manager.broadcast(task_id, "log", {
                 "phase": "downloading",
-                "message": "Installing NPM packages..."
+                "message": "正在安装 NPM 包..."
             })
 
             # Create a temporary node_modules directory
@@ -233,7 +233,7 @@ class NPMDownloader:
                     "phase": "downloading",
                     "current": 0,
                     "total": progress.total,
-                    "message": f"Packing {progress.total} packages..."
+                    "message": f"正在打包 {progress.total} 个包..."
                 })
 
                 for package_dir in packages:
@@ -261,7 +261,7 @@ class NPMDownloader:
                                 "current": progress.completed,
                                 "total": progress.total,
                                 "package_name": package_name,
-                                "message": f"Packed {package_name}"
+                                "message": f"已打包 {package_name}"
                             })
                         else:
                             progress.failed += 1
@@ -278,7 +278,7 @@ class NPMDownloader:
 
             await ws_manager.broadcast(task_id, "status", {
                 "phase": "downloading",
-                "message": f"NPM download complete: {progress.completed}/{progress.total} packages"
+                "message": f"NPM 下载完成: {progress.completed}/{progress.total} 个包"
             })
 
             return progress
@@ -287,7 +287,7 @@ class NPMDownloader:
             logger.error(f"Error downloading NPM packages: {e}")
             await ws_manager.broadcast(task_id, "error", {
                 "phase": "downloading",
-                "message": f"Error downloading NPM packages: {str(e)}"
+                "message": f"下载 NPM 包失败: {str(e)}"
             })
             raise
 

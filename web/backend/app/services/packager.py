@@ -24,7 +24,7 @@ class Packager:
         try:
             await ws_manager.broadcast(task_id, "status", {
                 "phase": "packing",
-                "message": "Creating archive..."
+                "message": "正在创建压缩包..."
             })
 
             total_files = 0
@@ -40,7 +40,7 @@ class Packager:
                 "phase": "packing",
                 "current": 0,
                 "total": total_files,
-                "message": f"Packing {total_files} files..."
+                "message": f"正在打包 {total_files} 个文件..."
             })
 
             with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -57,7 +57,7 @@ class Packager:
                                     "phase": "packing",
                                     "current": processed_files,
                                     "total": total_files,
-                                    "message": f"Packed {processed_files}/{total_files} files..."
+                                    "message": f"已打包 {processed_files}/{total_files} 个文件..."
                                 })
 
                 # Add Python packages
@@ -73,7 +73,7 @@ class Packager:
                                     "phase": "packing",
                                     "current": processed_files,
                                     "total": total_files,
-                                    "message": f"Packed {processed_files}/{total_files} files..."
+                                    "message": f"已打包 {processed_files}/{total_files} 个文件..."
                                 })
 
             # Get archive size
@@ -81,7 +81,7 @@ class Packager:
 
             await ws_manager.broadcast(task_id, "status", {
                 "phase": "packing",
-                "message": f"Archive created: {archive_size / (1024*1024):.2f} MB"
+                "message": f"压缩包已创建: {archive_size / (1024*1024):.2f} MB"
             })
 
             logger.info(f"Archive created for task {task_id}: {output_path} ({archive_size} bytes)")
@@ -91,7 +91,7 @@ class Packager:
             logger.error(f"Error creating archive: {e}")
             await ws_manager.broadcast(task_id, "error", {
                 "phase": "packing",
-                "message": f"Error creating archive: {str(e)}"
+                "message": f"创建压缩包失败: {str(e)}"
             })
             raise
 

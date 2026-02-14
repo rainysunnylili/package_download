@@ -179,7 +179,7 @@ async def parse_dependencies_background(task_id: str):
 
         await ws_manager.broadcast(task_id, "complete", {
             "phase": "parsing",
-            "message": "Dependency parsing complete"
+            "message": "依赖解析完成"
         })
 
     except Exception as e:
@@ -187,7 +187,7 @@ async def parse_dependencies_background(task_id: str):
         task_manager.update_task(task_id, status=TaskStatus.FAILED, error=str(e))
         await ws_manager.broadcast(task_id, "error", {
             "phase": "parsing",
-            "message": f"Parsing failed: {str(e)}"
+            "message": f"解析失败: {str(e)}"
         })
 
 
@@ -253,7 +253,7 @@ async def download_packages_background(task_id: str):
 
         await ws_manager.broadcast(task_id, "complete", {
             "phase": "packing",
-            "message": "Download and packaging complete"
+            "message": "下载打包完成"
         })
 
     except Exception as e:
@@ -261,5 +261,5 @@ async def download_packages_background(task_id: str):
         task_manager.update_task(task_id, status=TaskStatus.FAILED, error=str(e))
         await ws_manager.broadcast(task_id, "error", {
             "phase": "downloading",
-            "message": f"Download failed: {str(e)}"
+            "message": f"下载失败: {str(e)}"
         })

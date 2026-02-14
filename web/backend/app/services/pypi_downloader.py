@@ -57,7 +57,7 @@ class PyPIDownloader:
         try:
             await ws_manager.broadcast(task_id, "status", {
                 "phase": "parsing",
-                "message": "Parsing Python dependencies..."
+                "message": "正在解析 Python 依赖..."
             })
 
             # Check for requirements.txt
@@ -88,7 +88,7 @@ class PyPIDownloader:
 
             await ws_manager.broadcast(task_id, "log", {
                 "phase": "parsing",
-                "message": f"Found {len(packages)} Python packages"
+                "message": f"找到 {len(packages)} 个 Python 包"
             })
 
             return packages
@@ -97,7 +97,7 @@ class PyPIDownloader:
             logger.error(f"Error parsing Python dependencies: {e}")
             await ws_manager.broadcast(task_id, "error", {
                 "phase": "parsing",
-                "message": f"Error parsing Python dependencies: {str(e)}"
+                "message": f"解析 Python 依赖失败: {str(e)}"
             })
             raise
 
@@ -114,7 +114,7 @@ class PyPIDownloader:
         try:
             await ws_manager.broadcast(task_id, "status", {
                 "phase": "downloading",
-                "message": "Downloading Python packages..."
+                "message": "正在下载 Python 包..."
             })
 
             requirements_files = list(upload_dir.glob("requirements*.txt"))
@@ -146,7 +146,7 @@ class PyPIDownloader:
                 "phase": "downloading",
                 "current": 0,
                 "total": progress.total,
-                "message": f"Downloading {progress.total} Python packages..."
+                "message": f"正在下载 {progress.total} 个 Python 包..."
             })
 
             # Download packages for each platform
@@ -154,7 +154,7 @@ class PyPIDownloader:
                 logger.info(f"Downloading packages for platform: {platform}")
                 await ws_manager.broadcast(task_id, "log", {
                     "phase": "downloading",
-                    "message": f"Downloading for platform: {platform}"
+                    "message": f"正在下载平台: {platform}"
                 })
 
                 # Create platform-specific directory
@@ -207,7 +207,7 @@ class PyPIDownloader:
                                         "current": progress.completed,
                                         "total": progress.total,
                                         "package_name": current_package,
-                                        "message": f"Downloaded {current_package}"
+                                        "message": f"已下载 {current_package}"
                                     })
 
                         await process.wait()
@@ -228,12 +228,12 @@ class PyPIDownloader:
                         logger.error(f"Error downloading from {req_file}: {e}")
                         await ws_manager.broadcast(task_id, "error", {
                             "phase": "downloading",
-                            "message": f"Error downloading packages: {str(e)}"
+                            "message": f"下载包失败: {str(e)}"
                         })
 
             await ws_manager.broadcast(task_id, "status", {
                 "phase": "downloading",
-                "message": f"Python download complete: {progress.completed}/{progress.total} packages"
+                "message": f"Python 下载完成: {progress.completed}/{progress.total} 个包"
             })
 
             return progress
@@ -242,7 +242,7 @@ class PyPIDownloader:
             logger.error(f"Error downloading Python packages: {e}")
             await ws_manager.broadcast(task_id, "error", {
                 "phase": "downloading",
-                "message": f"Error downloading Python packages: {str(e)}"
+                "message": f"下载 Python 包失败: {str(e)}"
             })
             raise
 

@@ -1,7 +1,7 @@
 /**
  * Task hook for managing task state
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Task, WSMessage } from "../types";
 import { api } from "../services/api";
 import { useWebSocket } from "./useWebSocket";
@@ -11,6 +11,7 @@ export const useTask = (taskId: string | null) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<WSMessage[]>([]);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const wsUrl = taskId ? api.getWebSocketUrl(taskId) : "";
 
@@ -41,6 +42,31 @@ export const useTask = (taskId: string | null) => {
       setLoading(false);
     }
   }, [taskId]);
+
+  // 轮询备用：当任务处于进行中的状态时，定时拉取任务状态
+  useEffect(() => {
+    if (
+      taskId &&
+      task &&
+      ["parsing", "downloading", "packing"].includes(task.status)
+    ) {
+      pollRef.current = setInterval(() => {
+        fetchTask();
+      }, 2000);
+    } else {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    }
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [taskId, task?.status, fetchTask]);
 
   useEffect(() => {
     if (taskId) {

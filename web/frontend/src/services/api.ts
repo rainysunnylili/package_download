@@ -150,7 +150,7 @@ class ApiService {
   getWebSocketUrl(taskId: string): string {
     const wsProtocol = this.baseUrl.startsWith("https") ? "wss" : "ws";
     const wsBaseUrl = this.baseUrl.replace(/^https?/, wsProtocol);
-    return `${wsBaseUrl}/ws/tasks/${taskId}`;
+    return `${wsBaseUrl}/api/ws/tasks/${taskId}`;
   }
 }
 

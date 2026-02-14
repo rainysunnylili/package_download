@@ -3,6 +3,7 @@ from fastapi import WebSocket
 from typing import Dict
 import json
 import logging
+import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class ConnectionManager:
         """Broadcast a message to all connections for a task"""
         message = {
             "type": message_type,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             **data
         }
         await self.send_message(task_id, message)

@@ -14,6 +14,13 @@ interface DownloadProgressProps {
   onDownload?: () => void;
 }
 
+const formatTimestamp = (ts: string | undefined): string => {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "";
+  return `[${d.toLocaleTimeString()}]`;
+};
+
 export const DownloadProgress: React.FC<DownloadProgressProps> = ({
   task,
   logs,
@@ -45,18 +52,30 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
     return `${mb.toFixed(2)} MB`;
   };
 
+  // 只显示下载和打包阶段的日志
+  const downloadLogs = logs.filter(
+    (log) => log.phase === "downloading" || log.phase === "packing"
+  );
+
   return (
-    <Card title="Download Progress">
+    <Card title="下载进度">
       <Space direction="vertical" style={{ width: "100%" }} size="large">
-        {task.options.npm && task.npm_progress.total > 0 && (
+        {/* 状态提示 */}
+        {isDownloading && (
+          <Text type="secondary">
+            {task.status === "packing" ? "正在打包压缩..." : "正在下载依赖包..."}
+          </Text>
+        )}
+
+        {task.options.npm && (
           <div>
             <Space>
-              <Text strong>NPM Packages:</Text>
+              <Text strong>NPM 包：</Text>
               <Text>
-                {task.npm_progress.completed}/{task.npm_progress.total}
+                {task.npm_progress.completed}/{task.npm_progress.total || "—"}
               </Text>
               {task.npm_progress.failed > 0 && (
-                <Tag color="error">Failed: {task.npm_progress.failed}</Tag>
+                <Tag color="error">失败：{task.npm_progress.failed}</Tag>
               )}
             </Space>
             <Progress
@@ -70,15 +89,15 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
           </div>
         )}
 
-        {task.options.pypi && task.pypi_progress.total > 0 && (
+        {task.options.pypi && (
           <div>
             <Space>
-              <Text strong>Python Packages:</Text>
+              <Text strong>Python 包：</Text>
               <Text>
-                {task.pypi_progress.completed}/{task.pypi_progress.total}
+                {task.pypi_progress.completed}/{task.pypi_progress.total || "—"}
               </Text>
               {task.pypi_progress.failed > 0 && (
-                <Tag color="error">Failed: {task.pypi_progress.failed}</Tag>
+                <Tag color="error">失败：{task.pypi_progress.failed}</Tag>
               )}
             </Space>
             <Progress
@@ -98,11 +117,11 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
               <Space>
                 <CheckCircleOutlined style={{ color: "#52c41a", fontSize: 24 }} />
                 <Title level={4} style={{ margin: 0 }}>
-                  Download Complete!
+                下载完成！
                 </Title>
               </Space>
               <Text>
-                Archive size: <Text strong>{formatSize(task.archive_size)}</Text>
+                包大小： <Text strong>{formatSize(task.archive_size)}</Text>
               </Text>
               <Button
                 type="primary"
@@ -111,7 +130,7 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
                 onClick={onDownload}
                 block
               >
-                Download Archive
+                下载压缩包
               </Button>
             </Space>
           </Card>
@@ -123,7 +142,7 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
               <CloseCircleOutlined style={{ color: "#ff4d4f", fontSize: 24 }} />
               <div>
                 <Title level={4} style={{ margin: 0 }}>
-                  Download Failed
+                  下载失败
                 </Title>
                 <Text type="danger">{task.error}</Text>
               </div>
@@ -131,18 +150,39 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
           </Card>
         )}
 
-        {logs.length > 0 && (
-          <Card title="Download Logs" size="small">
+        {/* 失败包列表 */}
+        {(task.npm_progress.failed_packages.length > 0 ||
+          task.pypi_progress.failed_packages.length > 0) && (
+          <Card title="失败包列表" size="small">
+            <Space wrap>
+              {task.npm_progress.failed_packages.map((pkg) => (
+                <Tag color="error" key={`npm-${pkg}`}>
+                  NPM: {pkg}
+                </Tag>
+              ))}
+              {task.pypi_progress.failed_packages.map((pkg) => (
+                <Tag color="error" key={`pypi-${pkg}`}>
+                  PyPI: {pkg}
+                </Tag>
+              ))}
+            </Space>
+          </Card>
+        )}
+
+        {downloadLogs.length > 0 && (
+          <Card title="下载日志" size="small">
             <List
               size="small"
-              dataSource={logs.slice(-50).reverse()}
+              dataSource={downloadLogs.slice(-50).reverse()}
               style={{ maxHeight: 300, overflow: "auto" }}
               renderItem={(log) => (
                 <List.Item>
                   <Space>
-                    <Text type="secondary">[{new Date(log.timestamp).toLocaleTimeString()}]</Text>
-                    {log.type === "error" && <Tag color="error">ERROR</Tag>}
-                    {log.type === "complete" && <Tag color="success">SUCCESS</Tag>}
+                    {formatTimestamp(log.timestamp) && (
+                      <Text type="secondary">{formatTimestamp(log.timestamp)}</Text>
+                    )}
+                    {log.type === "error" && <Tag color="error">错误</Tag>}
+                    {log.type === "complete" && <Tag color="success">完成</Tag>}
                     <Text>{log.message}</Text>
                     {log.package_name && <Tag>{log.package_name}</Tag>}
                   </Space>

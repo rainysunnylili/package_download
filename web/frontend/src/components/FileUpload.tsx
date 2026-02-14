@@ -27,7 +27,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
 
   const handleUpload = useCallback(async () => {
     if (fileList.length === 0) {
-      message.error("Please select files to upload");
+      message.error("请选择要上传的文件");
       return;
     }
 
@@ -36,8 +36,9 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
     try {
       const formData = new FormData();
       fileList.forEach((file) => {
-        if (file.originFileObj) {
-          formData.append("files", file.originFileObj);
+        const rawFile = file.originFileObj || file;
+        if (rawFile instanceof File) {
+          formData.append("files", rawFile);
         }
       });
       formData.append("options", JSON.stringify(options));
@@ -52,11 +53,11 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
       }
 
       const result = await response.json();
-      message.success("Files uploaded successfully!");
+      message.success("文件上传成功！");
       onUploadComplete(result.task_id);
       setFileList([]);
     } catch (error) {
-      message.error("Upload failed. Please try again.");
+      message.error("上传失败，请重试。");
       console.error(error);
     } finally {
       setUploading(false);
@@ -71,7 +72,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
       const isAllowed = allowedExtensions.some((ext) => file.name.endsWith(ext));
 
       if (!isAllowed) {
-        message.error(`${file.name} is not a valid dependency file`);
+        message.error(`${file.name} 不是有效的依赖文件`);
         return Upload.LIST_IGNORE;
       }
 
@@ -84,49 +85,30 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
   };
 
   return (
-    <Card title="Upload Dependency Files">
+    <Card title="上传依赖文件">
       <Space direction="vertical" style={{ width: "100%" }} size="large">
         <Dragger {...uploadProps}>
           <p className="ant-upload-drag-icon">
             <InboxOutlined />
           </p>
-          <p className="ant-upload-text">Click or drag files to upload</p>
+          <p className="ant-upload-text">点击或拖拽文件到此区域上传</p>
           <p className="ant-upload-hint">
-            Supported files: package.json, requirements.txt, Pipfile, pyproject.toml
+            支持的文件：package.json、requirements.txt、Pipfile、pyproject.toml
           </p>
         </Dragger>
 
-        {fileList.length > 0 && (
-          <div>
-            <h4>Uploaded Files:</h4>
-            <Space wrap>
-              {fileList.map((file) => (
-                <Tag
-                  key={file.uid}
-                  closable
-                  onClose={() => {
-                    setFileList((prev) => prev.filter((f) => f.uid !== file.uid));
-                  }}
-                >
-                  {file.name}
-                </Tag>
-              ))}
-            </Space>
-          </div>
-        )}
-
-        <Card title="Download Options" size="small">
+        <Card title="下载选项" size="small">
           <Space direction="vertical" style={{ width: "100%" }}>
             <Checkbox
               checked={options.npm}
               onChange={(e) => setOptions({ ...options, npm: e.target.checked })}
             >
-              Download NPM packages
+              下载 NPM 包
             </Checkbox>
 
             {options.npm && (
               <div style={{ marginLeft: 24 }}>
-                <span>Node.js version: </span>
+                <span>Node.js 版本：</span>
                 <Select
                   value={options.node_version}
                   onChange={(value) =>
@@ -145,13 +127,13 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
               checked={options.pypi}
               onChange={(e) => setOptions({ ...options, pypi: e.target.checked })}
             >
-              Download Python packages
+              下载 Python 包
             </Checkbox>
 
             {options.pypi && (
               <div style={{ marginLeft: 24 }}>
                 <div>
-                  <span>Python version: </span>
+                  <span>Python 版本：</span>
                   <Select
                     value={options.python_version}
                     onChange={(value) =>
@@ -165,7 +147,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
                   </Select>
                 </div>
                 <div style={{ marginTop: 8 }}>
-                  <span>Target platforms: </span>
+                  <span>目标平台：</span>
                   <Select
                     mode="multiple"
                     value={options.platforms}
@@ -193,7 +175,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
           size="large"
           block
         >
-          {uploading ? "Uploading..." : "Start Analysis"}
+          {uploading ? "上传中..." : "开始分析"}
         </Button>
       </Space>
     </Card>
